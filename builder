@@ -130,12 +130,18 @@ class Config:
 			self.partitions[args.modify].step_modify()
 
 		if(args.vmdk):
-			assert 'vmdk' in self._yaml
-			print("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, self._yaml['vmdk']))
+			assert('vmdk' in self._yaml or isinstance(args.vmdk, str))
+			if(isinstance(args.vmdk, str)):
+				print("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, args.vmdk))
+			else:
+				print("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, self._yaml['vmdk']))
 
 		if(args.vdi):
-			assert 'vdi' in self._yaml
-			print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
+			assert('vdi' in self._yaml or isinstance(args.vdi, str))
+			if(isinstance(args.vdi, str)):
+				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, args.vdi))
+			else:
+				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
 
 def size_to_sectors(size):
 	if(size[-1] == 'M'):
@@ -149,8 +155,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('file', help='input YAML file')
 parser.add_argument('-m', '--modify', type=int)
 parser.add_argument('-o', '--output', help='override output file')
-parser.add_argument('--vmdk', action='store_true', help='build a VMDK image')
-parser.add_argument('--vdi', action='store_true', help='build a VDI image')
+parser.add_argument('--vmdk', action='store', type=str, default=False, const=True, nargs='?', help='build a VMDK image')
+parser.add_argument('--vdi', action='store', type=str, default=False, const=True, nargs='?', help='build a VDI image')
 args = parser.parse_args()
 
 config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args)
