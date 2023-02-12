@@ -66,6 +66,20 @@ class Btrfs(FS):
 
 	def step_modify(self):
 		print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile, self.start, self.size))
+		
+class NRFS(FS):
+	def step_image(self):
+		print("sgdisk {} --new {}:{}:{} --typecode {}:f752bf42-7b96-4c3a-9685-ad8497dca74c --change-name {}:{}".format(self.cfg.imgfile, self.num + 1, self.start, self.start + self.size - 1, self.num + 1, self.num + 1, self.label))
+		
+	def step_create(self):
+		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+		content_string = ''
+		if(self.content):
+			content_string = '-f -d {}'.format(self.content)
+		print('nrfs-tool make {} {}'.format(content_string, self.partfile))
+
+	def step_modify(self):
+		print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile, self.start, self.size))
 
 class Image:
 	def __init__(self, yml, cfg):
@@ -94,6 +108,8 @@ class Config:
 				self.partitions[num] = FAT32(num, part, self)
 			elif(part['fs'] == 'btrfs'):
 				self.partitions[num] = Btrfs(num, part, self)
+			elif(part['fs'] == 'nrfs'):
+				self.partitions[num] = NRFS(num, part, self)
 			else:
 				raise RuntimeError('unexpected fs {} in partition {}'.format(part['fs'], num))
 
