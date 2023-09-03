@@ -35,14 +35,20 @@ class FS:
 		if(self.bootable):
 			print("parted {} -s -a minimal toggle {} boot".format(self.cfg.imgfile, self.num + 1))
 
+	def step_create_partfile(self):
+		if self.cfg.args.reuse_partitions:
+			print("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile, self.partfile, self.start, self.size))
+		else:
+			print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+
 class FAT32(FS):
 	def step_image(self):
 		print("parted {} -s -a minimal mkpart {} fat32 {}s {}s".format(self.cfg.imgfile, self.label, self.start, self.start + self.size - 1))
 
-	def step_create(self):
-		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+	def step_format(self):
 		print('mkfs.fat -F32 -s 1 {}'.format(self.partfile))
 
+	def step_create(self):
 		if (self.content != None):
 			if not self.cfg.args.mount:
 				# Rootless
@@ -78,7 +84,6 @@ class Btrfs(FS):
 		print("parted {} -s -a minimal mkpart {} btrfs {}s {}s".format(self.cfg.imgfile, self.label, self.start, self.start + self.size - 1))
 
 	def step_create(self):
-		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 		content_string = ''
 		if(self.content):
 			content_string = '-r {} '.format(self.content)
@@ -93,7 +98,6 @@ class NRFS(FS):
 		print("sgdisk {} --new {}:{}:{} --typecode {}:f752bf42-7b96-4c3a-9685-ad8497dca74c --change-name {}:{}".format(self.cfg.imgfile, self.num + 1, self.start, self.start + self.size - 1, self.num + 1, self.num + 1, self.label))
 
 	def step_create(self):
-		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 		content_string = ''
 		if(self.content):
 			content_string = '-f -d {}'.format(self.content)
@@ -154,13 +158,20 @@ class Config:
 
 	def build(self):
 		if(args.modify == None):
-			self.image.build()
-			for num, part in self.partitions.items():
-				print("# create partition {}".format(num))
-				part.step_image()
-				part.step_bootable()
+			if not self.args.reuse_partitions:
+				self.image.build()
+				for num, part in self.partitions.items():
+					print("# create partition {}".format(num))
+					part.step_image()
+					part.step_bootable()
+			else:
+				assert os.path.exists(self.imgfile)
 
 			for num, part in self.partitions.items():
+				part.step_create_partfile()
+				if hasattr(part, "step_format") and not self.args.skip_format:
+					print("# format partition {} ({})")
+					part.step_format()
 				print("# build partition {} ({})".format(num, part.fs))
 				part.step_create()
 		else:
@@ -232,6 +243,8 @@ parser.add_argument('file', help='input YAML file')
 parser.add_argument('-m', '--modify', type=int)
 parser.add_argument('-o', '--output', help='override output file')
 parser.add_argument('-b', '--bootloader', help='install bootloader as specified in configuration file', action='store_true')
+parser.add_argument('--reuse-partitions', help='reuse partitions in the file (requires them existing first)', action='store_true')
+parser.add_argument('--skip-format', help='dont format partitions when possible', action='store_true')
 parser.add_argument('--mount', help='mount the partitions instead of using root-less tools (requires rsync)', action='store_true')
 parser.add_argument('--temp-mount-dir', action='store', type=str, default="mnt", const=True, nargs='?', help='temporary folder to use for mounting (default \'mnt\')')
 parser.add_argument('--dont-create-mount-dir', action='store_true', help='disable creation and deletion of temporary mount folder')
