@@ -3,6 +3,7 @@
 import argparse
 import os
 import yaml
+import subprocess
 
 class FS:
 	def __init__(self, num, yml, cfg):
@@ -52,6 +53,12 @@ class FAT32(FS):
 
 	def step_modify(self):
 		print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile, self.start, self.size))
+
+	def mkdir(self, dest: str):
+		print('mmd -i {} ::/{}; true > /dev/null 2>&1'.format(self.partfile, dest))
+
+	def add_file(self, path: str, dest: str):
+		print('mcopy -i {} {} ::/{}'.format(self.partfile, path, dest))
 
 class Btrfs(FS):
 	def step_image(self):
@@ -141,9 +148,46 @@ class Config:
 			for num, part in self.partitions.items():
 				print("# build partition {} ({})".format(num, part.fs))
 				part.step_create()
-				part.step_modify()
 		else:
 			self.partitions[args.modify].step_modify()
+
+		if(args.bootloader):
+			assert 'bootloader' in self._yaml and 'name' in self._yaml['bootloader']
+			bootloader = self._yaml['bootloader']
+			if(self._yaml['bootloader']['name'] == 'limine'):
+				assert 'partition' in bootloader
+				partition = bootloader['partition']
+				assert isinstance(partition, int)
+				limine_bios = os.getenv('LIMINE_BIOS', '/usr/share/limine/limine-bios.sys')
+				limine_efi_ia32 = os.getenv('LIMINE_EFI_IA32', '/usr/share/limine/BOOTIA32.EFI')
+				limine_efi_x64 = os.getenv('LIMINE_EFI_X64', '/usr/share/limine/BOOTX64.EFI')
+				
+				# Create the EFI folder structure
+				print("# install limine (EFI and limine-bios.sys)")
+				self.partitions[partition].mkdir('EFI')
+				self.partitions[partition].mkdir('EFI/BOOT')
+				
+				# Copy the EFI files
+				self.partitions[partition].add_file(limine_efi_ia32, 'EFI/BOOT/BOOTIA32.EFI')
+				self.partitions[partition].add_file(limine_efi_x64, 'EFI/BOOT/BOOTX64.EFI')
+	
+				# Copy limine-bios.sys
+				self.partitions[partition].add_file(limine_bios, 'limine-bios.sys')
+
+		# Write the partitions to the image
+		for num, part in self.partitions.items():
+			print("# write partition {} ({})".format(num, part.fs))
+			part.step_modify()
+		
+		# If we are installing a bootloader, we may need to again modify the image here
+		if(args.bootloader):
+			assert 'bootloader' in self._yaml and 'name' in self._yaml['bootloader']
+			bootloader = self._yaml['bootloader']
+			if(self._yaml['bootloader']['name'] == 'limine'):
+				limine_command = os.getenv('LIMINE_PATH', 'limine')
+				# Run limine to install BIOS bootloader
+				print("# install limine (BIOS boot)")
+				print(limine_command + " bios-install " + self.imgfile)
 
 		if(args.vmdk):
 			assert('vmdk' in self._yaml or isinstance(args.vmdk, str))
@@ -158,6 +202,7 @@ class Config:
 				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, args.vdi))
 			else:
 				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
+				
 
 def size_to_sectors(size):
 	if(size[-1] == 'M'):
@@ -171,6 +216,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('file', help='input YAML file')
 parser.add_argument('-m', '--modify', type=int)
 parser.add_argument('-o', '--output', help='override output file')
+parser.add_argument('-b', '--bootloader', help='install bootloader as specified in configuration file', action='store_true')
 parser.add_argument('--vmdk', action='store', type=str, default=False, const=True, nargs='?', help='build a VMDK image')
 parser.add_argument('--vdi', action='store', type=str, default=False, const=True, nargs='?', help='build a VDI image')
 args = parser.parse_args()
