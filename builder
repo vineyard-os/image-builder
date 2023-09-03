@@ -87,7 +87,7 @@ class Btrfs(FS):
 		content_string = ''
 		if(self.content):
 			content_string = '-r {} '.format(self.content)
-		assert not self.cfg.mount
+		assert not self.cfg.args.mount and not self.cfg.args.skip_format
 		print('mkfs.btrfs -q -L {} {}{}'.format(self.label, content_string, self.partfile))
 
 	def step_modify(self):
@@ -101,7 +101,7 @@ class NRFS(FS):
 		content_string = ''
 		if(self.content):
 			content_string = '-f -d {}'.format(self.content)
-		assert not self.cfg.mount
+		assert not self.cfg.args.mount and not self.cfg.args.skip_format
 		print('nrfs-tool make {} {}'.format(content_string, self.partfile))
 
 	def step_modify(self):
