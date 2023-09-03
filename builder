@@ -43,13 +43,25 @@ class FAT32(FS):
 		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 		print('mkfs.fat -F32 -s 1 {}'.format(self.partfile))
 
-		if(self.content != None):
-			for path, subdirs, files in os.walk(self.content):
-				for name in subdirs:
-					print('mmd -i {} ::/{}'.format(self.partfile, os.path.join(path, name)[len(self.content):]))
+		if (self.content != None):
+			if not self.cfg.args.mount:
+				# Rootless
+					for path, subdirs, files in os.walk(self.content):
+						for name in subdirs:
+							print('mmd -i {} ::/{}'.format(self.partfile, os.path.join(path, name)[len(self.content):]))
 
-				for name in files:
-					print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name), os.path.join(path, name)[len(self.content):]))
+						for name in files:
+							print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name), os.path.join(path, name)[len(self.content):]))
+			else:
+				mount_cmd = "mount -t vfat {} {}".format(self.partfile, self.cfg.args.temp_mount_dir)
+				rsync_cmd = "rsync {} {}".format(self.content, self.cfg.args.temp_mount_dir)
+				umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
+				if self.cfg.args.elevator:
+					mount_cmd = self.cfg.args.elevator + " " + mount_cmd
+					umount_cmd = self.cfg.args.elevator + " " + umount_cmd
+				print(mount_cmd)
+				print(rsync_cmd)
+				print(umount_cmd)
 
 	def step_modify(self):
 		print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile, self.start, self.size))
@@ -69,20 +81,22 @@ class Btrfs(FS):
 		content_string = ''
 		if(self.content):
 			content_string = '-r {} '.format(self.content)
+		assert not self.cfg.mount
 		print('mkfs.btrfs -q -L {} {}{}'.format(self.label, content_string, self.partfile))
 
 	def step_modify(self):
 		print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile, self.start, self.size))
-		
+
 class NRFS(FS):
 	def step_image(self):
 		print("sgdisk {} --new {}:{}:{} --typecode {}:f752bf42-7b96-4c3a-9685-ad8497dca74c --change-name {}:{}".format(self.cfg.imgfile, self.num + 1, self.start, self.start + self.size - 1, self.num + 1, self.num + 1, self.label))
-		
+
 	def step_create(self):
 		print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 		content_string = ''
 		if(self.content):
 			content_string = '-f -d {}'.format(self.content)
+		assert not self.cfg.mount
 		print('nrfs-tool make {} {}'.format(content_string, self.partfile))
 
 	def step_modify(self):
@@ -161,16 +175,16 @@ class Config:
 				limine_bios = os.getenv('LIMINE_BIOS', '/usr/share/limine/limine-bios.sys')
 				limine_efi_ia32 = os.getenv('LIMINE_EFI_IA32', '/usr/share/limine/BOOTIA32.EFI')
 				limine_efi_x64 = os.getenv('LIMINE_EFI_X64', '/usr/share/limine/BOOTX64.EFI')
-				
+
 				# Create the EFI folder structure
 				print("# install limine (EFI and limine-bios.sys)")
 				self.partitions[partition].mkdir('EFI')
 				self.partitions[partition].mkdir('EFI/BOOT')
-				
+
 				# Copy the EFI files
 				self.partitions[partition].add_file(limine_efi_ia32, 'EFI/BOOT/BOOTIA32.EFI')
 				self.partitions[partition].add_file(limine_efi_x64, 'EFI/BOOT/BOOTX64.EFI')
-	
+
 				# Copy limine-bios.sys
 				self.partitions[partition].add_file(limine_bios, 'limine-bios.sys')
 
@@ -178,7 +192,7 @@ class Config:
 		for num, part in self.partitions.items():
 			print("# write partition {} ({})".format(num, part.fs))
 			part.step_modify()
-		
+
 		# If we are installing a bootloader, we may need to again modify the image here
 		if(args.bootloader):
 			assert 'bootloader' in self._yaml and 'name' in self._yaml['bootloader']
@@ -202,7 +216,7 @@ class Config:
 				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, args.vdi))
 			else:
 				print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
-				
+
 
 def size_to_sectors(size):
 	if(size[-1] == 'M'):
@@ -217,9 +231,19 @@ parser.add_argument('file', help='input YAML file')
 parser.add_argument('-m', '--modify', type=int)
 parser.add_argument('-o', '--output', help='override output file')
 parser.add_argument('-b', '--bootloader', help='install bootloader as specified in configuration file', action='store_true')
+parser.add_argument('--mount', help='mount the partitions instead of using root-less tools (requires rsync)', action='store_true')
+parser.add_argument('--temp-mount-dir', action='store', type=str, default="mnt", const=True, nargs='?', help='temporary folder to use for mounting (default \'mnt\')')
+parser.add_argument('--dont-create-mount-dir', action='store_true', help='disable creation and deletion of temporary mount folder')
+parser.add_argument('--elevator', action='store', type=str, default=False, const=True, nargs='?', help='tool to use to elevate privileges')
 parser.add_argument('--vmdk', action='store', type=str, default=False, const=True, nargs='?', help='build a VMDK image')
 parser.add_argument('--vdi', action='store', type=str, default=False, const=True, nargs='?', help='build a VDI image')
 args = parser.parse_args()
 
+if args.mount and not args.dont_create_mount_dir:
+	print("mkdir -p {}".format(args.temp_mount_dir))
+
 config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args)
 config.build()
+
+if args.mount and not args.dont_create_mount_dir:
+	print("rm -r {}".format(args.temp_mount_dir))
