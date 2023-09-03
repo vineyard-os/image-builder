@@ -54,10 +54,11 @@ class FAT32(FS):
 							print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name), os.path.join(path, name)[len(self.content):]))
 			else:
 				mount_cmd = "mount -t vfat {} {}".format(self.partfile, self.cfg.args.temp_mount_dir)
-				rsync_cmd = "rsync {} {}".format(self.content, self.cfg.args.temp_mount_dir)
+				rsync_cmd = "rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir)
 				umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
 				if self.cfg.args.elevator:
 					mount_cmd = self.cfg.args.elevator + " " + mount_cmd
+					rsync_cmd = self.cfg.args.elevator + " " + rsync_cmd
 					umount_cmd = self.cfg.args.elevator + " " + umount_cmd
 				print(mount_cmd)
 				print(rsync_cmd)
