@@ -4,13 +4,24 @@ import argparse
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 
 import yaml
 
 
+@dataclass
+class Command:
+    command: str
+    type: str
+
+    def __init__(self, _cmd: str, _type: str):
+        self.command = _cmd
+        self.type = _type
+
+
 class Emitter:
     output: str
-    buffer: [str] = []
+    buffer: [Command] = []
     args: argparse.Namespace
 
     def __init__(self, _args):
@@ -26,12 +37,6 @@ class Emitter:
         else:
             self.output = "console"
 
-    def __emit(self, s: str):
-        if self.output == "console":
-            print(s)
-        else:
-            assert self.output == "interactive"
-            self.buffer.append(s)
 
     def emitHeader(self):
         if self.output == "console":
@@ -41,39 +46,50 @@ class Emitter:
         pass
 
     def emit(self, cmd: str):
-        self.__emit(cmd)
+        self.buffer.append(Command(cmd, "cmd"))
 
     def emitElevated(self, cmd: str):
         if self.args.elevator:
             cmd = self.args.elevator + " " + cmd
-        self.__emit(cmd)
+        self.buffer.append(Command(cmd, "cmd"))
 
     def emitComment(self, comment: str):
-        self.__emit("# {}".format(comment))
+        self.buffer.append(Command(comment, "comment"))
 
-    def process(self):
-        if not self.output == "interactive":
-            return
+    def __processInteractive(self):
         print("Running the following plan: ")
-        for comment in self.buffer:
-            if comment[0] == '#':
-                print("\t{}".format(comment[2:]))
+        for cmd in self.buffer:
+            if cmd.type == "comment":
+                print("\t{}".format(cmd.command))
 
         print("=" * os.get_terminal_size().columns)
 
         for cmd in self.buffer:
-            if self.args.verbose and cmd[0] != '#':
-                print("{}:".format(cmd))
-            if cmd[0] == '#':
-                print("doing step '{}'".format(cmd[2:]))
+            if self.args.verbose and cmd.type == "comment":
+                print("{}:".format(cmd.command))
+            if cmd.type == "comment":
+                print("doing step '{}'".format(cmd.command))
                 continue
-            command = subprocess.run(cmd, shell=True, capture_output=True)
-            if command.stdout:
-                print("  output of {}:".format(cmd))
-                print("\t".join([""] + command.stdout.decode().splitlines()))
-            if command.returncode:
-                print("command '{}' failed (return code {})".format(cmd, command.returncode))
-                exit(command.returncode)
+            process = subprocess.run(cmd.command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if process.stdout and self.args.print_command_output:
+                print("  output of {}:".format(cmd.command))
+                print("\t".join([""] + [line + "\n" for line in process.stdout.decode().splitlines()]))
+            if process.returncode:
+                print("command '{}' failed (return code {})".format(cmd.command, process.returncode))
+                exit(process.returncode)
+
+    def __processConsole(self):
+        for cmd in self.buffer:
+            line = cmd.command
+            if cmd.type == "comment":
+                line = "# " + line
+            print(line)
+
+    def process(self):
+        if self.output == "interactive":
+            self.__processInteractive()
+        elif self.output == "console":
+            self.__processConsole()
 
 
 class FS:
@@ -135,7 +151,7 @@ class FS:
 
     def step_rsync(self):
         if self.content:
-            self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, 
+            self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content,
                                                                              self.cfg.args.temp_mount_dir))
 
     def step_umount(self):
@@ -384,6 +400,8 @@ parser.add_argument('--force-interactive-output', action='store_true',
                     help='force interactive mode')
 parser.add_argument('-v', '--verbose', action='store_true',
                     help='output each command as it is being executed, instead of just the tags (interactive only)')
+parser.add_argument('--print-command-output', action='store_true',
+                    help='print the output of a command after it has been executed')
 args = parser.parse_args()
 
 emitter = Emitter(args)
