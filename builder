@@ -57,20 +57,24 @@ class Emitter:
         print("Running the following plan: ")
         for comment in self.buffer:
             if comment[0] == '#':
-                print("\t{}".format(comment[1:]))
+                print("\t{}".format(comment[2:]))
 
         print("=" * os.get_terminal_size().columns)
 
         for cmd in self.buffer:
+            if self.args.verbose and cmd[0] != '#':
+                print("{}:".format(cmd))
             if cmd[0] == '#':
+                print("doing step '{}'".format(cmd[2:]))
                 continue
-            print("{}:".format(cmd))
-            command = subprocess.run(cmd, shell=True)
+            command = subprocess.run(cmd, shell=True, capture_output=True)
+            if command.stdout:
+                print("  output of {}:".format(cmd))
+                print("\t".join([""] + command.stdout.decode().splitlines()))
             if command.returncode:
-                print("FAILED (return code {})".format(command.returncode))
+                print("command '{}' failed (return code {})".format(cmd, command.returncode))
                 exit(command.returncode)
-            else:
-                print("\tOK")
+
 
 
 class FS:
@@ -108,6 +112,7 @@ class FS:
 
     def step_bootable(self):
         if self.bootable:
+            self.cfg.emitter.emitComment("set bootable bit for partition {}".format(self.num))
             self.cfg.emitter.emit("parted {} -s -a minimal toggle {} boot".format(self.cfg.imgfile, self.num + 1))
 
     def step_create_partfile(self):
@@ -130,7 +135,8 @@ class FS:
                                                                                          self.start, self.size))
 
     def step_rsync(self):
-        self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir))
+        if self.content:
+            self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir))
 
     def step_umount(self):
         self.cfg.emitter.emitElevated("umount {}".format(self.cfg.args.temp_mount_dir))
@@ -263,9 +269,10 @@ class Config:
     def build(self):
         if args.modify is None:
             if not self.args.reuse_partitions:
+                self.emitter.emitComment("create image file {}".format(self.imgfile))
                 self.image.build()
                 for num, part in self.partitions.items():
-                    self.emitter.emitComment("# create partition {}".format(num))
+                    self.emitter.emitComment("create partition {}".format(num))
                     part.step_image()
                     part.step_bootable()
             else:
@@ -274,7 +281,7 @@ class Config:
             for num, part in self.partitions.items():
                 part.step_create_partfile()
                 if hasattr(part, "step_format") and not self.args.skip_format:
-                    self.emitter.emitComment("# format partition {} ({})")
+                    self.emitter.emitComment("format partition {} ({})")
                     part.step_format()
                 self.emitter.emitComment("build partition {} ({})".format(num, part.fs))
                 if args.mount:
@@ -298,7 +305,7 @@ class Config:
                 limine_efi_x64 = os.getenv('LIMINE_EFI_X64', '/usr/share/limine/BOOTX64.EFI')
 
                 # Create the EFI folder structure
-                self.emitter.emitComment("# install limine (EFI and limine-bios.sys)")
+                self.emitter.emitComment("install limine (EFI and limine-bios.sys)")
                 self.partitions[partition].mkdir('EFI')
                 self.partitions[partition].mkdir('EFI/BOOT')
 
@@ -320,7 +327,7 @@ class Config:
             if self._yaml['bootloader']['name'] == 'limine':
                 limine_command = os.getenv('LIMINE_PATH', 'limine')
                 # Run limine to install BIOS bootloader
-                self.emitter.emitComment("# install limine (BIOS boot)")
+                self.emitter.emitComment("install limine (BIOS boot)")
                 self.emitter.emit(limine_command + " bios-install " + self.imgfile)
 
         if args.vmdk:
@@ -375,18 +382,18 @@ parser.add_argument('--force-console-output', action='store_true',
                     help='force output of console commands')
 parser.add_argument('--force-interactive-output', action='store_true',
                     help='force interactive mode')
+parser.add_argument('-v', '--verbose', action='store_true',
+                    help='output each command as it is being executed, instead of just the tags (interactive only)')
 args = parser.parse_args()
 
 emitter = Emitter(args)
 
 if args.mount:
     if not args.dont_create_mount_dir and not os.path.exists(args.temp_mount_dir):
-        emitter.emitComment("create temp mount dir if it does not exist")
-        emitter.emit("mkdir -p {}".format(args.temp_mount_dir))
+        emitter.emit("mkdir -p {} #NOK".format(args.temp_mount_dir))
 
     if os.path.exists(args.temp_mount_dir) and os.path.ismount(args.temp_mount_dir):
-        emitter.emitComment("unmount temp mount dir")
-        emitter.emitElevated("umount {}".format(args.temp_mount_dir))
+        emitter.emitElevated("umount {} #NOK".format(args.temp_mount_dir))
 
 emitter.emitHeader()
 config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args, emitter)
@@ -394,7 +401,6 @@ config.build()
 emitter.emitFooter()
 
 if args.mount and not args.dont_create_mount_dir:
-    emitter.emitComment("remove temp mount dir")
-    emitter.emit("rm -r {}".format(args.temp_mount_dir))
+    emitter.emit("rm -r {} #NOK".format(args.temp_mount_dir))
 
 emitter.process()
