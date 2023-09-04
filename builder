@@ -2,32 +2,70 @@
 
 import argparse
 import os
+import subprocess
+import sys
 
 import yaml
 
 
 class Emitter:
+    output: str
+    buffer: [str] = []
     args: argparse.Namespace
 
     def __init__(self, _args):
         self.args = _args
 
+        if sys.stdout.isatty():
+            self.output = "interactive"
+        else:
+            self.output = "console"
+
+    def __emit(self, s: str):
+        if self.output == "console":
+            print(s)
+        else:
+            assert self.output == "interactive"
+            self.buffer.append(s)
+
     def emitHeader(self):
-        print("#!/bin/bash")
+        if self.output == "console":
+            print("#!/bin/bash")
 
     def emitFooter(self):
         pass
 
     def emit(self, cmd: str):
-        print(cmd)
+        self.__emit(cmd)
 
     def emitElevated(self, cmd: str):
         if self.args.elevator:
-            cmd = self.args.elevator + cmd
-        print(cmd)
+            cmd = self.args.elevator + " " + cmd
+        self.__emit(cmd)
 
     def emitComment(self, comment: str):
-        print("# {}".format(comment))
+        self.__emit("# {}".format(comment))
+
+    def process(self):
+        if not self.output == "interactive":
+            return
+        print("Running the following plan: ")
+        for comment in self.buffer:
+            if comment[0] == '#':
+                print("\t{}".format(comment[1:]))
+
+        print("=" * os.get_terminal_size().columns)
+
+        for cmd in self.buffer:
+            if cmd[0] == '#':
+                continue
+            print("{}:".format(cmd))
+            command = subprocess.run(cmd, shell=True)
+            if command.returncode:
+                print("FAILED (return code {})".format(command.returncode))
+                exit(command.returncode)
+            else:
+                print("\tOK")
 
 
 class FS:
@@ -70,30 +108,27 @@ class FS:
     def step_create_partfile(self):
         if self.dd_required:
             if self.cfg.args.reuse_partitions:
-                self.cfg.emitter.emit("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
-                                                                                               self.partfile,
-                                                                                               self.start,
-                                                                                               self.size))
+                self.cfg.emitter.emit(
+                    "dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
+                                                                                             self.partfile,
+                                                                                             self.start,
+                                                                                             self.size))
             else:
-                self.cfg.emitter.emit('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+                self.cfg.emitter.emit(
+                    'dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 
     def step_modify(self):
         if self.dd_required:
-            self.cfg.emitter.emit("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile,
-                                                                                           self.cfg.imgfile,
-                                                                                           self.start, self.size))
+            self.cfg.emitter.emit(
+                "dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile,
+                                                                                         self.cfg.imgfile,
+                                                                                         self.start, self.size))
 
     def step_rsync(self):
-        rsync_cmd = "rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir)
-        if self.cfg.args.elevator:
-            rsync_cmd = self.cfg.args.elevator + " " + rsync_cmd
-        self.cfg.emitter.emit(rsync_cmd)
+        self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir))
 
     def step_umount(self):
-        umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
-        if self.cfg.args.elevator:
-            umount_cmd = self.cfg.args.elevator + " " + umount_cmd
-        self.cfg.emitter.emit(umount_cmd)
+        self.cfg.emitter.emitElevated("umount {}".format(self.cfg.args.temp_mount_dir))
 
 
 class FAT32(FS):
@@ -113,9 +148,7 @@ class FAT32(FS):
             mount_cmd = "mount -t vfat {} {} -o loop,offset={}".format(self.cfg.imgfile,
                                                                        self.cfg.args.temp_mount_dir,
                                                                        self.start * 512)
-        if self.cfg.args.elevator:
-            mount_cmd = self.cfg.args.elevator + " " + mount_cmd
-        self.cfg.emitter.emit(mount_cmd)
+        self.cfg.emitter.emitElevated(mount_cmd)
 
     def step_create(self):
         # Rootless
@@ -273,7 +306,7 @@ class Config:
 
         # Write the partitions to the image
         for num, part in self.partitions.items():
-            self.emitter.emitComment("# write partition {} ({})".format(num, part.fs))
+            self.emitter.emitComment("write partition {} ({})".format(num, part.fs))
             part.step_modify()
 
         # If we are installing a bootloader, we may need to again modify the image here
@@ -337,8 +370,14 @@ args = parser.parse_args()
 
 emitter = Emitter(args)
 
-if args.mount and not args.dont_create_mount_dir:
-    emitter.emit("mkdir -p {}".format(args.temp_mount_dir))
+if args.mount:
+    if not args.dont_create_mount_dir and not os.path.exists(args.temp_mount_dir):
+        emitter.emitComment("create temp mount dir if it does not exist")
+        emitter.emit("mkdir -p {}".format(args.temp_mount_dir))
+
+    if os.path.exists(args.temp_mount_dir) and os.path.ismount(args.temp_mount_dir):
+        emitter.emitComment("unmount temp mount dir")
+        emitter.emitElevated("umount {}".format(args.temp_mount_dir))
 
 emitter.emitHeader()
 config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args, emitter)
@@ -346,4 +385,7 @@ config.build()
 emitter.emitFooter()
 
 if args.mount and not args.dont_create_mount_dir:
+    emitter.emitComment("remove temp mount dir")
     emitter.emit("rm -r {}".format(args.temp_mount_dir))
+
+emitter.process()
