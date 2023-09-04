@@ -16,6 +16,11 @@ class Emitter:
     def __init__(self, _args):
         self.args = _args
 
+        if self.args.force_interactive_output:
+            self.output = "interactive"
+        elif self.args.force_console_output:
+            self.output = "console"
+
         if sys.stdout.isatty():
             self.output = "interactive"
         else:
@@ -366,6 +371,10 @@ parser.add_argument('--vmdk', action='store', type=str, default=False, const=Tru
                     help='build a VMDK image')
 parser.add_argument('--vdi', action='store', type=str, default=False, const=True, nargs='?',
                     help='build a VDI image')
+parser.add_argument('--force-console-output', action='store_true',
+                    help='force output of console commands')
+parser.add_argument('--force-interactive-output', action='store_true',
+                    help='force interactive mode')
 args = parser.parse_args()
 
 emitter = Emitter(args)
