@@ -76,7 +76,6 @@ class Emitter:
                 exit(command.returncode)
 
 
-
 class FS:
     start: int
     size: int
@@ -136,7 +135,8 @@ class FS:
 
     def step_rsync(self):
         if self.content:
-            self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir))
+            self.cfg.emitter.emitElevated("rsync --recursive {}/* {}".format(self.content, 
+                                                                             self.cfg.args.temp_mount_dir))
 
     def step_umount(self):
         self.cfg.emitter.emitElevated("umount {}".format(self.cfg.args.temp_mount_dir))
