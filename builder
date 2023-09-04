@@ -35,17 +35,41 @@ class FS:
         else:
             return None
 
+    @property
+    def dd_required(self):
+        return True
+
     def step_bootable(self):
         if self.bootable:
             print("parted {} -s -a minimal toggle {} boot".format(self.cfg.imgfile, self.num + 1))
 
     def step_create_partfile(self):
-        if self.cfg.args.reuse_partitions:
-            print("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
-                                                                                           self.partfile, self.start,
-                                                                                           self.size))
-        else:
-            print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+        if self.dd_required:
+            if self.cfg.args.reuse_partitions:
+                print("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
+                                                                                               self.partfile,
+                                                                                               self.start,
+                                                                                               self.size))
+            else:
+                print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+
+    def step_modify(self):
+        if self.dd_required:
+            print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile,
+                                                                                           self.cfg.imgfile,
+                                                                                           self.start, self.size))
+
+    def step_rsync(self):
+        rsync_cmd = "rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir)
+        if self.cfg.args.elevator:
+            rsync_cmd = self.cfg.args.elevator + " " + rsync_cmd
+        print(rsync_cmd)
+
+    def step_umount(self):
+        umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
+        if self.cfg.args.elevator:
+            umount_cmd = self.cfg.args.elevator + " " + umount_cmd
+        print(umount_cmd)
 
 
 class FAT32(FS):
@@ -56,32 +80,34 @@ class FAT32(FS):
     def step_format(self):
         print('mkfs.fat -F32 -s 1 {}'.format(self.partfile))
 
+    def step_mount(self):
+        if self.dd_required:
+            mount_cmd = "mount -t vfat {} {} -o loop".format(self.partfile,
+                                                             self.cfg.args.temp_mount_dir)
+        else:
+            mount_cmd = "mount -t vfat {} {} -o loop,offset={}".format(self.cfg.imgfile,
+                                                                       self.cfg.args.temp_mount_dir,
+                                                                       self.start * 512)
+        if self.cfg.args.elevator:
+            mount_cmd = self.cfg.args.elevator + " " + mount_cmd
+        print(mount_cmd)
+
     def step_create(self):
+        # Rootless
         if self.content is not None:
-            if not self.cfg.args.mount:
-                # Rootless
-                for path, subdirs, files in os.walk(self.content):
-                    for name in subdirs:
-                        print('mmd -i {} ::/{}'.format(self.partfile, os.path.join(path, name)[len(self.content):]))
+            assert not self.cfg.args.mount
+            for path, subdirs, files in os.walk(self.content):
+                for name in subdirs:
+                    print('mmd -i {} ::/{}'.format(self.partfile, os.path.join(path, name)[len(self.content):]))
 
-                    for name in files:
-                        print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name),
-                                                            os.path.join(path, name)[len(self.content):]))
-            else:
-                mount_cmd = "mount -t vfat {} {}".format(self.partfile, self.cfg.args.temp_mount_dir)
-                rsync_cmd = "rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir)
-                umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
-                if self.cfg.args.elevator:
-                    mount_cmd = self.cfg.args.elevator + " " + mount_cmd
-                    rsync_cmd = self.cfg.args.elevator + " " + rsync_cmd
-                    umount_cmd = self.cfg.args.elevator + " " + umount_cmd
-                print(mount_cmd)
-                print(rsync_cmd)
-                print(umount_cmd)
+                for name in files:
+                    print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name),
+                                                        os.path.join(path, name)[len(self.content):]))
 
-    def step_modify(self):
-        print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile,
-                                                                                       self.start, self.size))
+
+    @property
+    def dd_required(self):
+        return not (self.cfg.args.mount and self.cfg.args.skip_format)
 
     def mkdir(self, dest: str):
         print('mmd -i {} ::/{}; true > /dev/null 2>&1'.format(self.partfile, dest))
@@ -102,10 +128,6 @@ class Btrfs(FS):
         assert not self.cfg.args.mount and not self.cfg.args.skip_format
         print('mkfs.btrfs -q -L {} {}{}'.format(self.label, content_string, self.partfile))
 
-    def step_modify(self):
-        print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile,
-                                                                                       self.start, self.size))
-
 
 class NRFS(FS):
     def step_image(self):
@@ -119,10 +141,6 @@ class NRFS(FS):
             content_string = '-f -d {}'.format(self.content)
         assert not self.cfg.args.mount and not self.cfg.args.skip_format
         print('nrfs-tool make {} {}'.format(content_string, self.partfile))
-
-    def step_modify(self):
-        print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile, self.cfg.imgfile,
-                                                                                       self.start, self.size))
 
 
 class Image:
@@ -193,7 +211,12 @@ class Config:
                     print("# format partition {} ({})")
                     part.step_format()
                 print("# build partition {} ({})".format(num, part.fs))
-                part.step_create()
+                if args.mount:
+                    part.step_mount()
+                    part.step_rsync()
+                    part.step_umount()
+                else:
+                    part.step_create()
         else:
             self.partitions[args.modify].step_modify()
 
