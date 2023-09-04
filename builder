@@ -6,6 +6,30 @@ import os
 import yaml
 
 
+class Emitter:
+    args: argparse.Namespace
+
+    def __init__(self, _args):
+        self.args = _args
+
+    def emitHeader(self):
+        print("#!/bin/bash")
+
+    def emitFooter(self):
+        pass
+
+    def emit(self, cmd: str):
+        print(cmd)
+
+    def emitElevated(self, cmd: str):
+        if self.args.elevator:
+            cmd = self.args.elevator + cmd
+        print(cmd)
+
+    def emitComment(self, comment: str):
+        print("# {}".format(comment))
+
+
 class FS:
     start: int
     size: int
@@ -41,21 +65,21 @@ class FS:
 
     def step_bootable(self):
         if self.bootable:
-            print("parted {} -s -a minimal toggle {} boot".format(self.cfg.imgfile, self.num + 1))
+            self.cfg.emitter.emit("parted {} -s -a minimal toggle {} boot".format(self.cfg.imgfile, self.num + 1))
 
     def step_create_partfile(self):
         if self.dd_required:
             if self.cfg.args.reuse_partitions:
-                print("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
+                self.cfg.emitter.emit("dd if={} of={} bs=512 skip={} count={} conv=notrunc status=none".format(self.cfg.imgfile,
                                                                                                self.partfile,
                                                                                                self.start,
                                                                                                self.size))
             else:
-                print('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
+                self.cfg.emitter.emit('dd if=/dev/zero of={} bs=512 count={} status=none'.format(self.partfile, self.size))
 
     def step_modify(self):
         if self.dd_required:
-            print("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile,
+            self.cfg.emitter.emit("dd if={} of={} bs=512 seek={} count={} conv=notrunc status=none".format(self.partfile,
                                                                                            self.cfg.imgfile,
                                                                                            self.start, self.size))
 
@@ -63,22 +87,23 @@ class FS:
         rsync_cmd = "rsync --recursive {}/* {}".format(self.content, self.cfg.args.temp_mount_dir)
         if self.cfg.args.elevator:
             rsync_cmd = self.cfg.args.elevator + " " + rsync_cmd
-        print(rsync_cmd)
+        self.cfg.emitter.emit(rsync_cmd)
 
     def step_umount(self):
         umount_cmd = "umount {}".format(self.cfg.args.temp_mount_dir)
         if self.cfg.args.elevator:
             umount_cmd = self.cfg.args.elevator + " " + umount_cmd
-        print(umount_cmd)
+        self.cfg.emitter.emit(umount_cmd)
 
 
 class FAT32(FS):
     def step_image(self):
-        print("parted {} -s -a minimal mkpart {} fat32 {}s {}s".format(self.cfg.imgfile, self.label, self.start,
-                                                                       self.start + self.size - 1))
+        self.cfg.emitter.emit("parted {} -s -a minimal mkpart {} fat32 {}s {}s".format(self.cfg.imgfile, self.label,
+                                                                                       self.start,
+                                                                                       self.start + self.size - 1))
 
     def step_format(self):
-        print('mkfs.fat -F32 -s 1 {}'.format(self.partfile))
+        self.cfg.emitter.emit('mkfs.fat -F32 -s 1 {}'.format(self.partfile))
 
     def step_mount(self):
         if self.dd_required:
@@ -90,7 +115,7 @@ class FAT32(FS):
                                                                        self.start * 512)
         if self.cfg.args.elevator:
             mount_cmd = self.cfg.args.elevator + " " + mount_cmd
-        print(mount_cmd)
+        self.cfg.emitter.emit(mount_cmd)
 
     def step_create(self):
         # Rootless
@@ -98,49 +123,51 @@ class FAT32(FS):
             assert not self.cfg.args.mount
             for path, subdirs, files in os.walk(self.content):
                 for name in subdirs:
-                    print('mmd -i {} ::/{}'.format(self.partfile, os.path.join(path, name)[len(self.content):]))
+                    self.cfg.emitter.emit('mmd -i {} ::/{}'.format(self.partfile,
+                                                                   os.path.join(path, name)[len(self.content):]))
 
                 for name in files:
-                    print('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name),
-                                                        os.path.join(path, name)[len(self.content):]))
-
+                    self.cfg.emitter.emit('mcopy -i {} {} ::/{}'.format(self.partfile, os.path.join(path, name),
+                                                                        os.path.join(path, name)[len(self.content):]))
 
     @property
     def dd_required(self):
         return not (self.cfg.args.mount and self.cfg.args.skip_format)
 
     def mkdir(self, dest: str):
-        print('mmd -i {} ::/{}; true > /dev/null 2>&1'.format(self.partfile, dest))
+        self.cfg.emitter.emit('mmd -i {} ::/{}; true > /dev/null 2>&1'.format(self.partfile, dest))
 
     def add_file(self, path: str, dest: str):
-        print('mcopy -i {} {} ::/{}'.format(self.partfile, path, dest))
+        self.cfg.emitter.emit('mcopy -i {} {} ::/{}'.format(self.partfile, path, dest))
 
 
 class Btrfs(FS):
     def step_image(self):
-        print("parted {} -s -a minimal mkpart {} btrfs {}s {}s".format(self.cfg.imgfile, self.label, self.start,
-                                                                       self.start + self.size - 1))
+        self.cfg.emitter.emit(
+            "parted {} -s -a minimal mkpart {} btrfs {}s {}s".format(self.cfg.imgfile, self.label, self.start,
+                                                                     self.start + self.size - 1))
 
     def step_create(self):
         content_string = ''
         if self.content:
             content_string = '-r {} '.format(self.content)
         assert not self.cfg.args.mount and not self.cfg.args.skip_format
-        print('mkfs.btrfs -q -L {} {}{}'.format(self.label, content_string, self.partfile))
+        self.cfg.emitter.emit('mkfs.btrfs -q -L {} {}{}'.format(self.label, content_string, self.partfile))
 
 
 class NRFS(FS):
     def step_image(self):
-        print("sgdisk {} --new {}:{}:{} --typecode {}:f752bf42-7b96-4c3a-9685-ad8497dca74c --change-name {}:{}".format(
-            self.cfg.imgfile, self.num + 1, self.start, self.start + self.size - 1, self.num + 1, self.num + 1,
-            self.label))
+        self.cfg.emitter.emit(
+            "sgdisk {} --new {}:{}:{} --typecode {}:f752bf42-7b96-4c3a-9685-ad8497dca74c --change-name {}:{}".format(
+                self.cfg.imgfile, self.num + 1, self.start, self.start + self.size - 1, self.num + 1, self.num + 1,
+                self.label))
 
     def step_create(self):
         content_string = ''
         if self.content:
             content_string = '-f -d {}'.format(self.content)
         assert not self.cfg.args.mount and not self.cfg.args.skip_format
-        print('nrfs-tool make {} {}'.format(content_string, self.partfile))
+        self.cfg.emitter.emit('nrfs-tool make {} {}'.format(content_string, self.partfile))
 
 
 class Image:
@@ -149,19 +176,20 @@ class Image:
         self.cfg = cfg
 
     def build(self):
-        print('#!/bin/bash')
-        print('dd if=/dev/zero of={} bs=1{} count={} status=none'.format(self.cfg.imgfile, self._yaml['size'][-1],
-                                                                         self._yaml['size'][:-1]))
+        self.cfg.emitter.emit(
+            'dd if=/dev/zero of={} bs=1{} count={} status=none'.format(self.cfg.imgfile, self._yaml['size'][-1],
+                                                                       self._yaml['size'][:-1]))
         if self._yaml['type'] == 'gpt':
-            print('parted {} -s -a minimal mktable gpt'.format(self.cfg.imgfile))
+            self.cfg.emitter.emit('parted {} -s -a minimal mktable gpt'.format(self.cfg.imgfile))
         else:
             raise RuntimeError('unknown partition type {}'.format(self._yaml['type']))
 
 
 class Config:
-    def __init__(self, _config, _args):
+    def __init__(self, _config, _args, _emitter: Emitter):
         self._yaml = _config
         self.args = _args
+        self.emitter = _emitter
         self.disk_sectors = size_to_sectors(_config['size'])
         self.image = Image(_config, self)
         self.partitions = dict()
@@ -199,7 +227,7 @@ class Config:
             if not self.args.reuse_partitions:
                 self.image.build()
                 for num, part in self.partitions.items():
-                    print("# create partition {}".format(num))
+                    self.emitter.emitComment("# create partition {}".format(num))
                     part.step_image()
                     part.step_bootable()
             else:
@@ -208,9 +236,9 @@ class Config:
             for num, part in self.partitions.items():
                 part.step_create_partfile()
                 if hasattr(part, "step_format") and not self.args.skip_format:
-                    print("# format partition {} ({})")
+                    self.emitter.emitComment("# format partition {} ({})")
                     part.step_format()
-                print("# build partition {} ({})".format(num, part.fs))
+                self.emitter.emitComment("build partition {} ({})".format(num, part.fs))
                 if args.mount:
                     part.step_mount()
                     part.step_rsync()
@@ -232,7 +260,7 @@ class Config:
                 limine_efi_x64 = os.getenv('LIMINE_EFI_X64', '/usr/share/limine/BOOTX64.EFI')
 
                 # Create the EFI folder structure
-                print("# install limine (EFI and limine-bios.sys)")
+                self.emitter.emitComment("# install limine (EFI and limine-bios.sys)")
                 self.partitions[partition].mkdir('EFI')
                 self.partitions[partition].mkdir('EFI/BOOT')
 
@@ -245,7 +273,7 @@ class Config:
 
         # Write the partitions to the image
         for num, part in self.partitions.items():
-            print("# write partition {} ({})".format(num, part.fs))
+            self.emitter.emitComment("# write partition {} ({})".format(num, part.fs))
             part.step_modify()
 
         # If we are installing a bootloader, we may need to again modify the image here
@@ -254,22 +282,22 @@ class Config:
             if self._yaml['bootloader']['name'] == 'limine':
                 limine_command = os.getenv('LIMINE_PATH', 'limine')
                 # Run limine to install BIOS bootloader
-                print("# install limine (BIOS boot)")
-                print(limine_command + " bios-install " + self.imgfile)
+                self.emitter.emitComment("# install limine (BIOS boot)")
+                self.emitter.emit(limine_command + " bios-install " + self.imgfile)
 
         if args.vmdk:
             assert ('vmdk' in self._yaml or isinstance(args.vmdk, str))
             if isinstance(args.vmdk, str):
-                print("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, args.vmdk))
+                self.emitter.emit("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, args.vmdk))
             else:
-                print("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, self._yaml['vmdk']))
+                self.emitter.emit("qemu-img convert -f raw -O vmdk {} {}".format(self.imgfile, self._yaml['vmdk']))
 
         if args.vdi:
             assert ('vdi' in self._yaml or isinstance(args.vdi, str))
             if isinstance(args.vdi, str):
-                print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, args.vdi))
+                self.emitter.emit("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, args.vdi))
             else:
-                print("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
+                self.emitter.emit("qemu-img convert -f raw -O vdi {} {}".format(self.imgfile, self._yaml['vdi']))
 
 
 def size_to_sectors(size):
@@ -307,11 +335,15 @@ parser.add_argument('--vdi', action='store', type=str, default=False, const=True
                     help='build a VDI image')
 args = parser.parse_args()
 
-if args.mount and not args.dont_create_mount_dir:
-    print("mkdir -p {}".format(args.temp_mount_dir))
+emitter = Emitter(args)
 
-config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args)
+if args.mount and not args.dont_create_mount_dir:
+    emitter.emit("mkdir -p {}".format(args.temp_mount_dir))
+
+emitter.emitHeader()
+config = Config(yaml.load(open(args.file, 'r'), Loader=yaml.SafeLoader), args, emitter)
 config.build()
+emitter.emitFooter()
 
 if args.mount and not args.dont_create_mount_dir:
-    print("rm -r {}".format(args.temp_mount_dir))
+    emitter.emit("rm -r {}".format(args.temp_mount_dir))
