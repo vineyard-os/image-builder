@@ -37,7 +37,6 @@ class Emitter:
         else:
             self.output = "console"
 
-
     def emitHeader(self):
         if self.output == "console":
             print("#!/bin/bash")
@@ -157,6 +156,26 @@ class FS:
     def step_umount(self):
         self.cfg.emitter.emitElevated("umount {}".format(self.cfg.args.temp_mount_dir))
 
+    def mkdir(self, dest: str):
+        if self.cfg.args.mount:
+            self.cfg.emitter.emitElevated("mkdir {}".format(str(os.path.join(self.cfg.args.temp_mount_dir, dest))))
+        else:
+            assert hasattr(self, "mkdir_rootless")
+            self.mkdir_rootless(dest)
+
+    def add_file(self, path: str, dest: str):
+        if self.cfg.args.mount:
+            self.cfg.emitter.emitElevated("cp \"{}\" \"{}\"".format(path, str(os.path.join(self.cfg.args.temp_mount_dir, dest))))
+        else:
+            assert hasattr(self, "add_file_rootless")
+            self.add_file_rootless(dest)
+
+    def mkdir_rootless(self, dest):
+        raise NotImplemented("fs {} does not support adding non-content dir folders".format(self.__class__.__name__))
+
+    def add_file_rootless(self, dest):
+        raise NotImplemented("fs {} does not support copying non-content dir files".format(self.__class__.__name__))
+
 
 class FAT32(FS):
     def step_image(self):
@@ -194,10 +213,10 @@ class FAT32(FS):
     def dd_required(self):
         return not (self.cfg.args.mount and self.cfg.args.skip_format)
 
-    def mkdir(self, dest: str):
+    def mkdir_rootless(self, dest: str):
         self.cfg.emitter.emit('mmd -i {} ::/{}; true > /dev/null 2>&1'.format(self.partfile, dest))
 
-    def add_file(self, path: str, dest: str):
+    def add_file_rootless(self, path: str, dest: str):
         self.cfg.emitter.emit('mcopy -i {} {} ::/{}'.format(self.partfile, path, dest))
 
 
@@ -294,41 +313,51 @@ class Config:
             else:
                 assert os.path.exists(self.imgfile)
 
+            bootloader_type: str | None = None
+            bootloader_part: int = 0
+
+            if args.bootloader:
+                assert 'bootloader' in self._yaml and 'name' in self._yaml['bootloader']
+                bootloader_yaml = self._yaml['bootloader']
+                if self._yaml['bootloader']['name'] == "limine":
+                    assert "partition" in bootloader_yaml
+                    bootloader_type = "limine"
+                    bootloader_part = bootloader_yaml["partition"]
+                    assert isinstance(bootloader_part, int)
+
             for num, part in self.partitions.items():
                 part.step_create_partfile()
                 if hasattr(part, "step_format") and not self.args.skip_format:
-                    self.emitter.emitComment("format partition {} ({})")
+                    self.emitter.emitComment("format partition {} ({})".format(num, part.fs))
                     part.step_format()
                 self.emitter.emitComment("build partition {} ({})".format(num, part.fs))
                 if args.mount:
                     part.step_mount()
                     part.step_rsync()
-                    part.step_umount()
                 else:
                     part.step_create()
 
-            if args.bootloader:
-                assert 'bootloader' in self._yaml and 'name' in self._yaml['bootloader']
-                bootloader = self._yaml['bootloader']
-                if self._yaml['bootloader']['name'] == 'limine':
-                    assert 'partition' in bootloader
-                    partition = bootloader['partition']
-                    assert isinstance(partition, int)
+                # If this partition houses bootloader files, and we are to install a bootloader, then copy them
+                if bootloader_type is not None and bootloader_part == num:
+                    assert bootloader_type == "limine"
                     limine_bios = os.getenv('LIMINE_BIOS', '/usr/share/limine/limine-bios.sys')
                     limine_efi_ia32 = os.getenv('LIMINE_EFI_IA32', '/usr/share/limine/BOOTIA32.EFI')
                     limine_efi_x64 = os.getenv('LIMINE_EFI_X64', '/usr/share/limine/BOOTX64.EFI')
 
                     # Create the EFI folder structure
-                    self.emitter.emitComment("install limine (EFI and limine-bios.sys)")
-                    self.partitions[partition].mkdir('EFI')
-                    self.partitions[partition].mkdir('EFI/BOOT')
+                    self.emitter.emitComment("copy limine files")
+                    part.mkdir('EFI')
+                    part.mkdir('EFI/BOOT')
 
                     # Copy the EFI files
-                    self.partitions[partition].add_file(limine_efi_ia32, 'EFI/BOOT/BOOTIA32.EFI')
-                    self.partitions[partition].add_file(limine_efi_x64, 'EFI/BOOT/BOOTX64.EFI')
+                    part.add_file(limine_efi_ia32, 'EFI/BOOT/BOOTIA32.EFI')
+                    part.add_file(limine_efi_x64, 'EFI/BOOT/BOOTX64.EFI')
 
                     # Copy limine-bios.sys
-                    self.partitions[partition].add_file(limine_bios, 'limine-bios.sys')
+                    part.add_file(limine_bios, 'limine-bios.sys')
+
+                if args.mount:
+                    part.step_umount()
 
             # Write the partitions to the image
             for num, part in self.partitions.items():
